@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ContentType, ParseMode
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     Message,
     BusinessConnection,
@@ -121,6 +121,10 @@ def init_db() -> sqlite3.Connection:
             pass
     conn.execute("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)")
     conn.execute(
+        "CREATE TABLE IF NOT EXISTS sent (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "chat_id INTEGER, message_id INTEGER, sent_at TEXT)"
+    )
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_msg ON messages (chat_id, tg_message_id);"
     )
     conn.commit()
@@ -144,6 +148,15 @@ def set_config(key: str, value: str) -> None:
         "INSERT INTO config (key, value) VALUES (?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (key, value),
+    )
+    DB.commit()
+
+
+def record_sent(chat_id: int, message_id: int) -> None:
+    """Запоминаем id сообщения, отправленного ботом (для команды /clear)."""
+    DB.execute(
+        "INSERT INTO sent (chat_id, message_id, sent_at) VALUES (?, ?, ?)",
+        (chat_id, message_id, now_utc()),
     )
     DB.commit()
 
@@ -276,25 +289,33 @@ async def notify(bot: Bot, target: int | None, text: str) -> None:
                  text.replace("\n", " ")[:80])
         return
     try:
-        await bot.send_message(target, text[:4000])
+        m = await bot.send_message(target, text[:4000])
+        record_sent(target, m.message_id)
     except Exception as e:  # noqa: BLE001
         log.warning("Не удалось отправить уведомление в %s: %s", target, e)
 
 
 async def _send_typed(bot: Bot, t: int, mtype: str, media, caption: str) -> None:
     if mtype == "photo":
-        await bot.send_photo(t, media, caption=caption)
+        m = await bot.send_photo(t, media, caption=caption)
+        record_sent(t, m.message_id)
     elif mtype == "video":
-        await bot.send_video(t, media, caption=caption)
+        m = await bot.send_video(t, media, caption=caption)
+        record_sent(t, m.message_id)
     elif mtype == "voice":
-        await bot.send_voice(t, media, caption=caption)
+        m = await bot.send_voice(t, media, caption=caption)
+        record_sent(t, m.message_id)
     elif mtype == "animation":
-        await bot.send_animation(t, media, caption=caption)
+        m = await bot.send_animation(t, media, caption=caption)
+        record_sent(t, m.message_id)
     elif mtype == "video_note":
-        await bot.send_message(t, caption)
-        await bot.send_video_note(t, media)
+        m1 = await bot.send_message(t, caption)
+        record_sent(t, m1.message_id)
+        m2 = await bot.send_video_note(t, media)
+        record_sent(t, m2.message_id)
     else:
-        await bot.send_document(t, media, caption=caption)
+        m = await bot.send_document(t, media, caption=caption)
+        record_sent(t, m.message_id)
 
 
 async def send_saved_media(
@@ -341,6 +362,39 @@ async def on_start(message: Message) -> None:
         "✅ Готово. Уведомления для этого аккаунта будут приходить именно сюда."
     )
     log.info("Start от чата %s", message.chat.id)
+
+
+@dp.message(Command("clear"))
+async def on_clear(message: Message, bot: Bot) -> None:
+    """Удаляет последние сообщения бота в этом чате. /clear [N] (по умолчанию 10)."""
+    if message.from_user and not allowed(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    n = 10
+    if len(parts) > 1 and parts[1].isdigit():
+        n = max(1, min(int(parts[1]), 100))
+    chat_id = message.chat.id
+    rows = DB.execute(
+        "SELECT id, message_id FROM sent WHERE chat_id=? ORDER BY id DESC LIMIT ?",
+        (chat_id, n)).fetchall()
+    deleted = 0
+    for rid, mid in rows:
+        try:
+            await bot.delete_message(chat_id, mid)
+            deleted += 1
+        except Exception:  # noqa: BLE001
+            pass  # старше 48ч или уже удалено
+        DB.execute("DELETE FROM sent WHERE id=?", (rid,))
+    DB.commit()
+    # удаляем и саму команду /clear
+    try:
+        await bot.delete_message(chat_id, message.message_id)
+    except Exception:  # noqa: BLE001
+        pass
+    conf = await bot.send_message(
+        chat_id, f"🧹 Удалено сообщений бота: {deleted}")
+    record_sent(chat_id, conf.message_id)
+    log.info("/clear: удалено %s сообщений в чате %s", deleted, chat_id)
 
 
 @dp.business_connection()
