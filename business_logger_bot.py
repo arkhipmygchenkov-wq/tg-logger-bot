@@ -55,8 +55,19 @@ SAVE_TIMED_MEDIA = os.getenv("SAVE_TIMED_MEDIA", "true").lower() in ("1", "true"
 LOG_CHAT_ID = os.getenv("LOG_CHAT_ID", "").strip()
 LOG_CHAT_ID = int(LOG_CHAT_ID) if LOG_CHAT_ID else None
 
+# БЕЛЫЙ СПИСОК: бот обслуживает только эти аккаунты (по user_id).
+# Сообщения/подключения любых других аккаунтов игнорируются.
+# Пусто -> разрешены все (не рекомендуется).
+_allowed = os.getenv("ALLOWED_ACCOUNTS", "1040241357,1350738338").strip()
+ALLOWED_ACCOUNTS = {int(x) for x in _allowed.split(",") if x.strip()}
+
 if not BOT_TOKEN:
     raise SystemExit("Ошибка: не задан BOT_TOKEN в .env (получите у @BotFather)")
+
+
+def allowed(owner_id) -> bool:
+    """True, если аккаунт разрешён (или список пуст)."""
+    return (not ALLOWED_ACCOUNTS) or (owner_id in ALLOWED_ACCOUNTS)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -312,6 +323,9 @@ async def send_saved_media(
 # --------------------------------------------------------------------------- #
 @dp.message(CommandStart())
 async def on_start(message: Message) -> None:
+    if message.from_user and not allowed(message.from_user.id):
+        log.info("Чужой /start от id=%s — игнор", message.from_user.id)
+        return
     await message.answer(
         "🕵️ <b>Бот-логгер активен!</b>\n\n"
         "Я слежу за вашими личными чатами и пришлю сюда уведомление, если "
@@ -332,6 +346,10 @@ async def on_start(message: Message) -> None:
 @dp.business_connection()
 async def on_business_connection(conn: BusinessConnection) -> None:
     state = "подключён ✅" if conn.is_enabled else "отключён ❌"
+    if conn.user and not allowed(conn.user.id):
+        log.warning("ОТКЛОНЕНО подключение чужого аккаунта id=%s (%s)",
+                    conn.user.id, conn.user.first_name)
+        return
     if conn.user:
         nm = " ".join(p for p in [conn.user.first_name, conn.user.last_name] if p)
         remember_owner(conn.id, conn.user.id, nm)
@@ -345,6 +363,8 @@ async def on_business_connection(conn: BusinessConnection) -> None:
 async def on_business_message(message: Message, bot: Bot) -> None:
     conn_id = message.business_connection_id
     owner_id, owner_name = await owner_of(bot, conn_id)
+    if not allowed(owner_id):
+        return
     target = target_chat(owner_id)
 
     sid, name, username = sender_of(message)
@@ -384,6 +404,8 @@ async def on_business_message(message: Message, bot: Bot) -> None:
 async def on_edited(message: Message, bot: Bot) -> None:
     conn_id = message.business_connection_id
     owner_id, owner_name = await owner_of(bot, conn_id)
+    if not allowed(owner_id):
+        return
     target = target_chat(owner_id)
 
     original = find_original(message.chat.id, message.message_id)
@@ -413,6 +435,8 @@ async def on_edited(message: Message, bot: Bot) -> None:
 async def on_deleted(event: BusinessMessagesDeleted, bot: Bot) -> None:
     conn_id = event.business_connection_id
     owner_id, owner_name = await owner_of(bot, conn_id)
+    if not allowed(owner_id):
+        return
     target = target_chat(owner_id)
     chat_id = event.chat.id
     partner_name = getattr(event.chat, "first_name", None) or \
