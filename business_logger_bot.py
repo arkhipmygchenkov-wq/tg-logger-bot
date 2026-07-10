@@ -49,6 +49,8 @@ DB_PATH = os.getenv("DB_PATH", "messages.db")
 MEDIA_DIR = os.getenv("MEDIA_DIR", "media")
 DOWNLOAD_MEDIA = os.getenv("DOWNLOAD_MEDIA", "true").lower() in ("1", "true", "yes")
 SAVE_TIMED_MEDIA = os.getenv("SAVE_TIMED_MEDIA", "true").lower() in ("1", "true", "yes")
+# Пересылать ли фото/медиа тебе в чат сообщениями. false -> не слать (но сохранять).
+FORWARD_MEDIA = os.getenv("FORWARD_MEDIA", "false").lower() in ("1", "true", "yes")
 
 # Если задан — ВСЕ уведомления идут только в этот чат (общий лог).
 # Если пусто — уведомления идут в чат каждого аккаунта отдельно.
@@ -447,10 +449,11 @@ async def on_business_message(message: Message, bot: Bot) -> None:
     log.info("[%s|%s] %s (@%s): %s", owner_name or "?", direction, name,
              username or "—", body[:50])
 
-    # ВСЕ фото (входящие и исходящие) пересылаем в чат аккаунта.
-    # Остальные "таймерные" медиа (видео/голос/кружки/гиф) — только входящие.
-    forward = (mtype == "photo") or \
-        (SAVE_TIMED_MEDIA and direction == "in" and mtype in TIMED_TYPES)
+    # Пересылка медиа в чат отключена по умолчанию (FORWARD_MEDIA=false).
+    forward = FORWARD_MEDIA and (
+        (mtype == "photo")
+        or (SAVE_TIMED_MEDIA and direction == "in" and mtype in TIMED_TYPES)
+    )
     if forward and target is not None:
         if mtype == "photo":
             d = "входящее" if direction == "in" else "исходящее"
