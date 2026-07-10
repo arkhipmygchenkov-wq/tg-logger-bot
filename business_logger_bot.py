@@ -447,9 +447,16 @@ async def on_business_message(message: Message, bot: Bot) -> None:
     log.info("[%s|%s] %s (@%s): %s", owner_name or "?", direction, name,
              username or "—", body[:50])
 
-    if SAVE_TIMED_MEDIA and direction == "in" and mtype in TIMED_TYPES:
-        label = "🔥 Исчезающее фото сохранено" if mtype == "photo" \
-            else f"⏳ Сохранённое медиа ({esc(mtype)})"
+    # ВСЕ фото (входящие и исходящие) пересылаем в чат аккаунта.
+    # Остальные "таймерные" медиа (видео/голос/кружки/гиф) — только входящие.
+    forward = (mtype == "photo") or \
+        (SAVE_TIMED_MEDIA and direction == "in" and mtype in TIMED_TYPES)
+    if forward and target is not None:
+        if mtype == "photo":
+            d = "входящее" if direction == "in" else "исходящее"
+            label = f"📷 Фото ({d})"
+        else:
+            label = f"⏳ Медиа ({esc(mtype)})"
         cap = f"{acct_tag(owner_name)}{label}\nОт: {who_html(name, username)}"
         await send_saved_media(bot, target, mtype, media_path, cap, file_id=file_id)
 
